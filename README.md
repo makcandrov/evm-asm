@@ -14,14 +14,6 @@ const CODE: &[u8] = bytecode! {
 assert_eq!(CODE, b"\x60\x08\x36\x14");
 ```
 
-Enable `alloy` to use `alloy_bytecode!` with the same syntax and return
-`alloy_primitives::Bytes`.
-
-```toml
-[dependencies]
-evm-asm = { version = "0.1", features = ["alloy"] }
-```
-
 Implements legacy EVM opcode encodings through the
 [Amsterdam execution-specs branch](https://github.com/ethereum/execution-specs/blob/forks/amsterdam/src/ethereum/forks/amsterdam/vm/instructions/__init__.py). Stack usage and jump
 destinations are not validated.

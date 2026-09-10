@@ -1,3 +1,5 @@
+use alloc::string::ToString;
+
 // Legacy EVM instruction encodings through the Amsterdam execution-specs branch:
 // https://github.com/ethereum/execution-specs/blob/forks/amsterdam/src/ethereum/forks/amsterdam/vm/instructions/__init__.py
 pub(crate) fn lookup(name: &str) -> Option<u8> {

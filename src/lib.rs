@@ -1,5 +1,11 @@
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![no_std]
+
 //! Assemble EVM bytecode at compile time with [`bytecode!`].
 
+extern crate alloc;
+
+use alloc::{format, string::ToString, vec::Vec};
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
@@ -16,8 +22,6 @@ mod opcodes;
 ///
 /// The result coerces to `&'static [u8]` and works in `const` and `static`
 /// initializers. Assembly happens at compile time with no runtime allocation.
-/// This macro is always available and does not require Alloy. Enable the
-/// `alloy` feature to also use `alloy_bytecode!`, which returns Alloy's `Bytes`.
 ///
 /// Opcode names are case-insensitive and may be separated by whitespace,
 /// commas, or semicolons. Rust comments are allowed.
@@ -79,48 +83,6 @@ mod opcodes;
 pub fn bytecode(input: TokenStream) -> TokenStream {
     assemble(input)
         .map(|bytes| quote!(#bytes))
-        .unwrap_or_else(Error::into_compile_error)
-        .into()
-}
-
-/// Assembles opcodes into an `alloy_primitives::Bytes` backed by static data.
-///
-/// Requires the `alloy` feature and an `alloy-primitives` dependency in the
-/// consuming crate. Uses the same syntax, validation, and assembly as
-/// [`bytecode!`], wrapping the byte-string literal in `Bytes::from_static`.
-/// No runtime parsing, allocation, or byte copying is needed.
-///
-/// ```
-/// use alloy_primitives::Bytes;
-/// use evm_asm::{alloy_bytecode, bytecode};
-///
-/// const CODE: Bytes = alloy_bytecode! { push1 0x08 calldatasize eq };
-/// const RAW: &[u8] = bytecode! { push1 0x08 calldatasize eq };
-/// assert_eq!(CODE.as_ref(), RAW);
-/// ```
-///
-/// Invalid instructions and operands produce the same compile errors as
-/// [`bytecode!`]:
-///
-/// ```compile_fail
-/// use evm_asm::alloy_bytecode;
-/// let code = alloy_bytecode! { unknown_opcode };
-/// ```
-///
-/// ```compile_fail
-/// use evm_asm::alloy_bytecode;
-/// let code = alloy_bytecode! { push1 };
-/// ```
-///
-/// ```compile_fail
-/// use evm_asm::alloy_bytecode;
-/// let code = alloy_bytecode! { push1 0x100 };
-/// ```
-#[cfg(feature = "alloy")]
-#[proc_macro]
-pub fn alloy_bytecode(input: TokenStream) -> TokenStream {
-    assemble(input)
-        .map(|bytes| quote!(::alloy_primitives::Bytes::from_static(#bytes)))
         .unwrap_or_else(Error::into_compile_error)
         .into()
 }
@@ -233,6 +195,8 @@ fn encode_immediate(literal: &LitInt, width: usize) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{format, string::ToString, vec};
+
     use super::Bytecode;
 
     #[test]
