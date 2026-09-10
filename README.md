@@ -25,10 +25,16 @@ Accepted grammar:
   Rust `//` and `/* */` comments are accepted.
 - `push1 value` through `push32 value`: one literal fitting the selected byte
   width, encoded big-endian and padded on the left with zeros.
-- PUSH interpolation: `push20 #ADDRESS`, `push20 #module::ADDRESS`, or
+- Exact PUSH interpolation: `push20 #ADDRESS`, `push20 #module::ADDRESS`, or
   `push20 #(ADDRESS.as_bytes())`. The constant or const expression must yield a
   byte array, slice, or reference with exactly the selected width, copied verbatim.
   Wrapper types need a const accessor; ordinary `AsRef`/`Deref` calls are unsupported.
+- Left-padded PUSH interpolation: `push1 #~(SIZE.to_be_bytes())`,
+  `push32 #~BYTES`, or `push32 #~left(BYTES)`. Adds leading zeros to shorter
+  inputs and discards only zero leading bytes from longer inputs.
+- Right-padded PUSH interpolation: `push32 #~right(BYTES)`. Adds trailing zeros
+  to shorter inputs and discards only zero trailing bytes from longer inputs.
+  Both modes preserve byte order and encode empty inputs as zero.
 - `dupn n` and `swapn n`: `17 <= n <= 235`.
 - `exchange n m`: `1 <= n < m` and `n + m <= 30`; separate operands with whitespace.
   Stack indices are encoded automatically.
@@ -40,5 +46,5 @@ Accepted grammar:
 - Aliases: `sha3`/`keccak` for `keccak256`, `difficulty` for `prevrandao`, and
   `suicide` for `selfdestruct`.
 
-Unknown opcodes, missing operands, out-of-range values, and interpolation length
+Unknown opcodes, missing operands, overflows, and exact interpolation length
 mismatches are compile errors.

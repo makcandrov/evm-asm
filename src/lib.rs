@@ -50,6 +50,67 @@ mod opcodes;
 /// assert_eq!(CODE[21], 0x00);
 /// ```
 ///
+/// Use `#~CONSTANT` or `#~(expression)` to interpret the bytes as an unsigned
+/// big-endian integer. Shorter inputs are left-padded with zeros; longer inputs
+/// must have only zeros in the discarded leading bytes. Empty inputs encode zero.
+/// `#~left(expression)` selects this behavior explicitly.
+/// `#~right(expression)` instead adds trailing zeros and discards only zero
+/// trailing bytes. Neither mode reverses the bytes. Plain `#` remains exact-width.
+///
+/// ```
+/// use evm_asm::bytecode;
+/// const SIZE: u64 = 7;
+/// const SMALL: &[u8; 2] = bytecode! { push1 #~(SIZE.to_be_bytes()) };
+/// const LARGE: &[u8; 33] = bytecode! { push32 #~(SIZE.to_be_bytes()) };
+/// assert_eq!(SMALL, bytecode! { push1 7 });
+/// assert_eq!(LARGE, bytecode! { push32 7 });
+/// ```
+///
+/// ```
+/// use evm_asm::bytecode;
+/// const WORD: [u8; 2] = [0x12, 0x34];
+/// const LEFT: &[u8] = bytecode! { push4 #~left(WORD) };
+/// const RIGHT: &[u8] = bytecode! { push4 #~right(WORD) };
+/// assert_eq!(LEFT, b"\x63\x00\x00\x12\x34");
+/// assert_eq!(RIGHT, b"\x63\x12\x34\x00\x00");
+/// ```
+///
+/// Nonzero trailing bytes cannot be discarded with right padding:
+///
+/// ```compile_fail
+/// use evm_asm::bytecode;
+/// const TOO_WIDE: &[u8] = &[7, 1, 0];
+/// let code = bytecode! { push1 #~right(TOO_WIDE) };
+/// ```
+///
+/// ```compile_fail
+/// use evm_asm::bytecode;
+/// const TOO_WIDE: [u8; 3] = [7, 0, 1];
+/// let code = bytecode! { push1 #~right(TOO_WIDE) };
+/// ```
+///
+/// Nonzero leading bytes cannot be discarded with left padding:
+///
+/// ```compile_fail
+/// use evm_asm::bytecode;
+/// const SIZE: u64 = 256;
+/// let code = bytecode! { push1 #~left(SIZE.to_be_bytes()) };
+/// ```
+///
+/// ```compile_fail
+/// use evm_asm::bytecode;
+/// const TOO_WIDE: &[u8] = &[0, 1, 0, 7];
+/// let code = bytecode! { push1 #~TOO_WIDE };
+/// ```
+///
+/// Padded interpolation also requires const-compatible operands:
+///
+/// ```compile_fail
+/// use evm_asm::bytecode;
+/// let size = 7u64;
+/// let code = bytecode! { push1 #~right(size.to_le_bytes()) };
+/// ```
+///
 /// Amsterdam adds `slotnum` (no operands), `dupn n`, `swapn n`, and
 /// `exchange n m`. Stack operands are logical indices, encoded by the macro
 /// according to [EIP-8024](https://eips.ethereum.org/EIPS/eip-8024):
@@ -160,6 +221,19 @@ struct Interpolation {
     width: usize,
     expression: TokenStream2,
     span: Span,
+    mode: InterpolationMode,
+}
+
+#[derive(Debug)]
+enum InterpolationMode {
+    Exact,
+    Fit(PaddingSide),
+}
+
+#[derive(Debug)]
+enum PaddingSide {
+    Left,
+    Right,
 }
 
 impl Bytecode {
@@ -169,33 +243,88 @@ impl Bytecode {
             return quote!(#literal);
         }
 
-        let mut encoded: Vec<_> = self.bytes.iter().map(|byte| quote!(#byte)).collect();
-        let mut checks = Vec::new();
-        for operand in &self.interpolations {
+        let literal = LitByteStr::new(&self.bytes, Span::call_site());
+        let length = self.bytes.len();
+        let operand_count = self.interpolations.len();
+        let mut operands = Vec::new();
+        let mut copies = Vec::new();
+        for (operand_index, operand) in self.interpolations.iter().enumerate() {
             let Interpolation {
                 offset,
                 width,
                 expression,
                 span,
+                mode,
             } = operand;
-            let message =
-                format!("`push{width}` interpolated operand must contain exactly {width} bytes");
-            checks.push(quote_spanned! { *span=>
-                ::core::assert!((#expression).len() == #width, #message);
+            let check = match mode {
+                InterpolationMode::Exact => {
+                    let message = format!(
+                        "`push{width}` interpolated operand must contain exactly {width} bytes"
+                    );
+                    quote_spanned! { *span=>
+                        ::core::assert!(source.len() == #width, #message);
+                        let start = 0;
+                        let padding = 0;
+                    }
+                }
+                InterpolationMode::Fit(side) => {
+                    let message = format!(
+                        "interpolated operand does not fit in `push{width}` ({width} bytes)"
+                    );
+                    let bounds = match side {
+                        PaddingSide::Left => quote! {
+                            let start = source.len() - count;
+                            let padding = #width - count;
+                            let mut index = 0;
+                            let end = start;
+                        },
+                        PaddingSide::Right => quote! {
+                            let start = 0;
+                            let padding = 0;
+                            let mut index = count;
+                            let end = source.len();
+                        },
+                    };
+                    quote_spanned! { *span=>
+                        #bounds
+                        while index < end {
+                            ::core::assert!(source[index] == 0, #message);
+                            index += 1;
+                        }
+                    }
+                }
+            };
+            copies.push(quote! {
+                {
+                    let source = operands[#operand_index];
+                    let count = if source.len() < #width { source.len() } else { #width };
+                    #check
+                    let mut index = 0;
+                    while index < count {
+                        output[#offset + padding + index] = source[start + index];
+                        index += 1;
+                    }
+                }
             });
-            // Indexing supports owned arrays, slices, and references to either.
-            // Each PUSH has at most 32 bytes. Emitting their expressions avoids
-            // local bindings that could collide with constants in caller scope.
-            for index in 0..*width {
-                encoded[offset + index] = quote_spanned! { *span=> (#expression)[#index] };
-            }
+            // Const slice methods work on arrays, slices, and references to either.
+            // split_at(0).1 gives the whole slice without a trait conversion.
+            operands.push(quote_spanned! { *span=> (#expression).split_at(0).1 });
         }
 
-        // Force evaluation even at runtime call sites, then promote the array.
+        // Isolate helper bindings from caller constants. Evaluate each operand
+        // once, outside the helper's scope, and force assembly at compile time.
         quote! {
             &const {
-                #(#checks)*
-                [#(#encoded),*]
+                ({
+                    mod __evm_asm {
+                        pub const fn assemble(operands: [&[u8]; #operand_count]) -> [u8; #length] {
+                            let mut output = *#literal;
+                            #(#copies)*
+                            output
+                        }
+                    }
+                    __evm_asm::assemble
+                })([#(#operands),*])
             }
         }
     }
@@ -229,12 +358,13 @@ impl Parse for Bytecode {
                 0x60..=0x7f => {
                     let width = usize::from(opcode - 0x5f);
                     if input.peek(Token![#]) {
-                        let (expression, span) = parse_interpolation(input)?;
+                        let (expression, span, mode) = parse_interpolation(input)?;
                         interpolations.push(Interpolation {
                             offset: bytes.len(),
                             width,
                             expression,
                             span,
+                            mode,
                         });
                         bytes.resize(bytes.len() + width, 0);
                     } else {
@@ -269,21 +399,45 @@ impl Parse for Bytecode {
     }
 }
 
-fn parse_interpolation(input: ParseStream<'_>) -> Result<(TokenStream2, Span)> {
+fn parse_interpolation(input: ParseStream<'_>) -> Result<(TokenStream2, Span, InterpolationMode)> {
     input.parse::<Token![#]>()?;
+    let mode = if input.peek(Token![~]) {
+        input.parse::<Token![~]>()?;
+        // Only reserve mode names before parentheses; bare paths remain valid.
+        let side = if input.peek(Ident) && input.peek2(token::Paren) {
+            let name: Ident = input.parse()?;
+            match name.to_string().as_str() {
+                "left" => PaddingSide::Left,
+                "right" => PaddingSide::Right,
+                _ => {
+                    return Err(Error::new(
+                        name.span(),
+                        format!("unknown padding mode `{name}`; expected `left` or `right`"),
+                    ));
+                }
+            }
+        } else {
+            PaddingSide::Left
+        };
+        InterpolationMode::Fit(side)
+    } else {
+        InterpolationMode::Exact
+    };
     if input.peek(token::Paren) {
         let content;
         parenthesized!(content in input);
         let expression: Expr = content.parse()?;
         if !content.is_empty() {
-            return Err(content.error("expected a single expression inside `#(...)`"));
+            return Err(
+                content.error("expected a single expression inside interpolation parentheses")
+            );
         }
-        Ok((quote!(#expression), expression.span()))
+        Ok((quote!(#expression), expression.span(), mode))
     } else {
         let path: ExprPath = input.parse().map_err(|_| {
-            input.error("expected a constant path or parenthesized expression after `#`")
+            input.error("expected a constant path or parenthesized expression for interpolation")
         })?;
-        Ok((quote!(#path), path.span()))
+        Ok((quote!(#path), path.span(), mode))
     }
 }
 
@@ -341,6 +495,30 @@ mod tests {
     #[test]
     fn rejects_malformed_or_misplaced_interpolation() {
         for input in [
+            "push20 #~left()",
+            "push20 #~right()",
+            "push20 #~left(VALUE, OTHER)",
+            "push20 #~right(VALUE OTHER)",
+            "push20 #~right(VALUE",
+            "push20 #~center(VALUE)",
+            "push20 #~left VALUE",
+            "push20 #~right VALUE",
+            "push20 #left(VALUE)",
+            "push20 #right(VALUE)",
+            "push0 #~right(VALUE)",
+            "dupn #~left(VALUE)",
+            "exchange #~right(VALUE) 2",
+            "push20 #~",
+            "push20 #~()",
+            "push20 #~(VALUE, OTHER)",
+            "push20 #~~VALUE",
+            "push20 #~123",
+            "push20 #~[0; 20]",
+            "push20 #~VALUE.as_slice()",
+            "push0 #~VALUE",
+            "dupn #~VALUE",
+            "exchange #~VALUE 2",
+            "#~VALUE",
             "push20 #",
             "push20 #()",
             "push20 #(VALUE, OTHER)",
