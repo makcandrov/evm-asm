@@ -1,0 +1,24 @@
+[package]
+name = "evm-asm"
+description = "Compile-time EVM bytecode assembly macro."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+repository = "https://github.com/makcandrov/evm-asm"
+homepage = "https://github.com/makcandrov/evm-asm"
+license = "MIT OR Apache-2.0"
+keywords = ["evm", "asm", "ethereum"]
+
+[lib]
+proc-macro = true
+
+[features]
+default = []
+alloy = ["dep:alloy-primitives"]
+
+[dependencies]
+alloy-primitives = { version = "1", optional = true }
+proc-macro2 = "1"
+quote = "1"
+ruint = "1"
+syn = "3"
