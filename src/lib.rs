@@ -1,7 +1,6 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![doc = include_str!("../README.md")]
 #![no_std]
-
-//! Assemble EVM bytecode at compile time with [`bytecode!`].
 
 extern crate alloc;
 

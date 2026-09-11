@@ -12,7 +12,7 @@ const CODE: &[u8] = bytecode! {
     eq
 };
 
-assert_eq!(CODE,  &[0x60, 0x08, 0x36, 0x14]);
+assert_eq!(CODE, &[0x60, 0x08, 0x36, 0x14]);
 ```
 
 Enable optional opcode hover documentation in rust-analyzer with:
@@ -57,3 +57,5 @@ Accepted grammar:
 
 Unknown opcodes, missing operands, overflows, and exact interpolation length
 mismatches are compile errors.
+
+Licensed under MIT or Apache-2.0, at your option.

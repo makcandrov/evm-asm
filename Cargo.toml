@@ -6,8 +6,9 @@ edition = "2024"
 rust-version = "1.91"
 repository = "https://github.com/makcandrov/evm-asm"
 homepage = "https://github.com/makcandrov/evm-asm"
+documentation = "https://docs.rs/evm-asm"
 license = "MIT OR Apache-2.0"
-keywords = ["evm", "asm", "ethereum"]
+keywords = ["evm", "asm", "ethereum", "bytecode", "proc-macro"]
 
 [lib]
 proc-macro = true
@@ -24,3 +25,6 @@ syn = { version = "3", features = ["full"] }
 
 [dev-dependencies]
 proc-macro2 = { version = "1", features = ["span-locations"] }
+
+[package.metadata.docs.rs]
+all-features = true
