@@ -220,7 +220,8 @@ struct Interpolation {
     offset: usize,
     width: usize,
     expression: TokenStream2,
-    span: Span,
+    // Generated tokens belong to `#`, never to identifiers inside the operand.
+    marker_span: Span,
     mode: InterpolationMode,
 }
 
@@ -253,7 +254,7 @@ impl Bytecode {
                 offset,
                 width,
                 expression,
-                span,
+                marker_span,
                 mode,
             } = operand;
             let check = match mode {
@@ -261,7 +262,7 @@ impl Bytecode {
                     let message = format!(
                         "`push{width}` interpolated operand must contain exactly {width} bytes"
                     );
-                    quote_spanned! { *span=>
+                    quote_spanned! { *marker_span=>
                         ::core::assert!(source.len() == #width, #message);
                         let start = 0;
                         let padding = 0;
@@ -285,7 +286,7 @@ impl Bytecode {
                             let end = source.len();
                         },
                     };
-                    quote_spanned! { *span=>
+                    quote_spanned! { *marker_span=>
                         #bounds
                         while index < end {
                             ::core::assert!(source[index] == 0, #message);
@@ -308,7 +309,7 @@ impl Bytecode {
             });
             // Const slice methods work on arrays, slices, and references to either.
             // split_at(0).1 gives the whole slice without a trait conversion.
-            operands.push(quote_spanned! { *span=> (#expression).split_at(0).1 });
+            operands.push(quote_spanned! { *marker_span=> (#expression).split_at(0).1 });
         }
 
         // Isolate helper bindings from caller constants. Evaluate each operand
@@ -358,12 +359,12 @@ impl Parse for Bytecode {
                 0x60..=0x7f => {
                     let width = usize::from(opcode - 0x5f);
                     if input.peek(Token![#]) {
-                        let (expression, span, mode) = parse_interpolation(input)?;
+                        let (expression, marker_span, mode) = parse_interpolation(input)?;
                         interpolations.push(Interpolation {
                             offset: bytes.len(),
                             width,
                             expression,
-                            span,
+                            marker_span,
                             mode,
                         });
                         bytes.resize(bytes.len() + width, 0);
@@ -400,7 +401,7 @@ impl Parse for Bytecode {
 }
 
 fn parse_interpolation(input: ParseStream<'_>) -> Result<(TokenStream2, Span, InterpolationMode)> {
-    input.parse::<Token![#]>()?;
+    let marker_span = input.parse::<Token![#]>()?.span();
     let mode = if input.peek(Token![~]) {
         input.parse::<Token![~]>()?;
         // Only reserve mode names before parentheses; bare paths remain valid.
@@ -432,12 +433,12 @@ fn parse_interpolation(input: ParseStream<'_>) -> Result<(TokenStream2, Span, In
                 content.error("expected a single expression inside interpolation parentheses")
             );
         }
-        Ok((quote!(#expression), expression.span(), mode))
+        Ok((quote!(#expression), marker_span, mode))
     } else {
         let path: ExprPath = input.parse().map_err(|_| {
             input.error("expected a constant path or parenthesized expression for interpolation")
         })?;
-        Ok((quote!(#path), path.span(), mode))
+        Ok((quote!(#path), marker_span, mode))
     }
 }
 
@@ -491,6 +492,60 @@ mod tests {
     use alloc::{format, string::ToString, vec};
 
     use super::Bytecode;
+
+    #[test]
+    fn interpolated_tokens_keep_unique_source_spans() {
+        use alloc::vec::Vec;
+        use proc_macro2::{TokenStream, TokenTree};
+
+        fn leaves(tokens: TokenStream) -> Vec<TokenTree> {
+            let mut result = Vec::new();
+            for token in tokens {
+                if let TokenTree::Group(group) = token {
+                    result.extend(leaves(group.stream()));
+                } else {
+                    result.push(token);
+                }
+            }
+            result
+        }
+
+        for source in [
+            "push2 #WORD",
+            "push2 #(WORD)",
+            "push3 #~WORD",
+            "push3 #~(WORD)",
+            "push3 #~left(WORD)",
+            "push3 #~right(WORD)",
+            "push2 #module::WORD",
+            "push2 #(Value::WORD)",
+            "push2 #<Value as Trait>::WORD",
+            "push1 #~(SIZE.to_be_bytes())",
+            "push3 #~left(WORD.as_bytes())",
+            "push3 #~right({ let bytes = WORD; bytes })",
+        ] {
+            let bytecode = syn::parse_str::<Bytecode>(source).unwrap();
+            let original = leaves(bytecode.interpolations[0].expression.clone());
+            let expanded = leaves(bytecode.expand());
+            for token in original {
+                let range = token.span().byte_range();
+                assert!(
+                    !range.is_empty(),
+                    "{source}: missing source span for {token}"
+                );
+                let mapped: Vec<_> = expanded
+                    .iter()
+                    .filter(|generated| generated.span().byte_range() == range)
+                    .map(ToString::to_string)
+                    .collect();
+                assert_eq!(
+                    mapped,
+                    vec![token.to_string()],
+                    "{source}: source token {token} also maps to generated helper code",
+                );
+            }
+        }
+    }
 
     #[test]
     fn rejects_malformed_or_misplaced_interpolation() {

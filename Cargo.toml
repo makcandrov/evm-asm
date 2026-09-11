@@ -17,3 +17,6 @@ proc-macro2 = "1"
 quote = "1"
 ruint = { version = "1", default-features = false }
 syn = { version = "3", features = ["full"] }
+
+[dev-dependencies]
+proc-macro2 = { version = "1", features = ["span-locations"] }
