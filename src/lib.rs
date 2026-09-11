@@ -19,12 +19,16 @@ use syn::{
     token,
 };
 
+#[cfg(feature = "opcode-docs")]
+mod opcode_docs;
 mod opcodes;
 
 /// Assembles opcodes into a static byte array of type `&'static [u8; N]`.
 ///
 /// The result coerces to `&'static [u8]` and works in `const` and `static`
 /// initializers. Assembly happens at compile time with no runtime allocation.
+/// Enable the optional `opcode-docs` feature for opcode hover documentation in
+/// rust-analyzer. It adds generated documentation only when enabled.
 ///
 /// Opcode names are case-insensitive and may be separated by whitespace,
 /// commas, or semicolons. Rust comments are allowed.
@@ -213,6 +217,8 @@ fn assemble(input: TokenStream) -> Result<TokenStream2> {
 struct Bytecode {
     bytes: Vec<u8>,
     interpolations: Vec<Interpolation>,
+    #[cfg(feature = "opcode-docs")]
+    opcode_refs: Vec<(Ident, u8)>,
 }
 
 #[derive(Debug)]
@@ -239,6 +245,13 @@ enum PaddingSide {
 
 impl Bytecode {
     fn expand(&self) -> TokenStream2 {
+        let bytes = self.expand_bytes();
+        #[cfg(feature = "opcode-docs")]
+        let bytes = opcode_docs::expand(&self.opcode_refs, bytes);
+        bytes
+    }
+
+    fn expand_bytes(&self) -> TokenStream2 {
         if self.interpolations.is_empty() {
             let literal = LitByteStr::new(&self.bytes, Span::call_site());
             return quote!(#literal);
@@ -335,6 +348,8 @@ impl Parse for Bytecode {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let mut bytes = Vec::new();
         let mut interpolations = Vec::new();
+        #[cfg(feature = "opcode-docs")]
+        let mut opcode_refs = Vec::new();
 
         while !input.is_empty() {
             if input.peek(Token![,]) {
@@ -354,6 +369,8 @@ impl Parse for Bytecode {
             let opcode = opcodes::lookup(&mnemonic)
                 .ok_or_else(|| Error::new(name.span(), format!("unknown opcode `{name}`")))?;
             bytes.push(opcode);
+            #[cfg(feature = "opcode-docs")]
+            opcode_refs.push((name, opcode));
 
             match opcode {
                 0x60..=0x7f => {
@@ -396,6 +413,8 @@ impl Parse for Bytecode {
         Ok(Self {
             bytes,
             interpolations,
+            #[cfg(feature = "opcode-docs")]
+            opcode_refs,
         })
     }
 }
@@ -492,6 +511,17 @@ mod tests {
     use alloc::{format, string::ToString, vec};
 
     use super::Bytecode;
+
+    #[cfg(not(feature = "opcode-docs"))]
+    #[test]
+    fn literal_expansion_has_no_documentation_scaffolding() {
+        use proc_macro2::TokenTree;
+        let code = syn::parse_str::<Bytecode>("push1 7 calldatasize").unwrap();
+        let tokens: alloc::vec::Vec<_> = code.expand().into_iter().collect();
+        assert!(matches!(tokens.as_slice(), [TokenTree::Literal(_)]));
+        let literal: syn::LitByteStr = syn::parse2(code.expand()).unwrap();
+        assert_eq!(literal.value(), [0x60, 7, 0x36]);
+    }
 
     #[test]
     fn interpolated_tokens_keep_unique_source_spans() {

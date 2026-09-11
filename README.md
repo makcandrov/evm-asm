@@ -15,6 +15,15 @@ const CODE: &[u8] = bytecode! {
 assert_eq!(CODE, b"\x60\x08\x36\x14");
 ```
 
+Enable optional opcode hover documentation in rust-analyzer with:
+
+```toml
+evm-asm = { version = "0.1", features = ["opcode-docs"] }
+```
+
+Disabled by default to avoid the extra expansion work. Only used opcodes are
+documented; bytecode and runtime behavior are unchanged.
+
 Implements legacy EVM opcode encodings through the
 [Amsterdam execution-specs branch](https://github.com/ethereum/execution-specs/blob/forks/amsterdam/src/ethereum/forks/amsterdam/vm/instructions/__init__.py). Stack usage and jump
 destinations are not validated.

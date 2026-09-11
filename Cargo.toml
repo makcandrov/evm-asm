@@ -12,6 +12,10 @@ keywords = ["evm", "asm", "ethereum"]
 [lib]
 proc-macro = true
 
+[features]
+default = []
+opcode-docs = []
+
 [dependencies]
 proc-macro2 = "1"
 quote = "1"
