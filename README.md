@@ -12,7 +12,7 @@ const CODE: &[u8] = bytecode! {
     eq
 };
 
-assert_eq!(CODE, b"\x60\x08\x36\x14");
+assert_eq!(CODE,  &[0x60, 0x08, 0x36, 0x14]);
 ```
 
 Enable optional opcode hover documentation in rust-analyzer with:

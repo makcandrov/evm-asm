@@ -3,8 +3,10 @@
 use alloc::{
     format,
     string::{String, ToString},
+    vec,
     vec::Vec,
 };
+use core::fmt::Write;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
@@ -49,8 +51,8 @@ struct Info {
     docs: String,
 }
 
-// Descriptions and stack effects follow the Amsterdam execution specifications.
-// Sources are linked directly from each generated hover.
+// Stack presentation is inspired by evm.codes. Descriptions are maintained here;
+// execution specifications and gas schedules are linked from each hover.
 fn make_info(
     opcode: u8,
     name: String,
@@ -63,14 +65,286 @@ fn make_info(
         0x1e => "https://eips.ethereum.org/EIPS/eip-7939".to_string(),
         0x4b => "https://eips.ethereum.org/EIPS/eip-7843".to_string(),
         0xe6..=0xe8 => "https://eips.ethereum.org/EIPS/eip-8024".to_string(),
+        0xfe => "https://eips.ethereum.org/EIPS/eip-141".to_string(),
         _ => format!(
-            "https://github.com/ethereum/execution-specs/blob/forks/amsterdam/src/ethereum/forks/amsterdam/vm/instructions/{section}.py"
+            "https://github.com/ethereum/execution-specs/blob/master/src/ethereum/forks/osaka/vm/instructions/{section}.py"
         ),
     };
+    let since = since(opcode);
+    let (minimum, note) = minimum_gas(opcode);
+    let draft = matches!(opcode, 0x4b | 0xe6..=0xe8);
+    let schedule = if draft { "Amsterdam draft" } else { "Osaka" };
+    let gas = match minimum {
+        Some(minimum) => format!("{minimum} ({schedule})."),
+        None => "Not applicable: this opcode always fails.".to_string(),
+    };
+    let note = if note.is_empty() {
+        String::new()
+    } else {
+        format!(" {note}")
+    };
+    let diagram = stack_diagram(opcode);
+    let stack_note = if matches!(opcode, 0x80..=0x9f | 0xe6..=0xe8) {
+        " Stack positions start at 1 (`s1` is the top)."
+    } else {
+        ""
+    };
+    let links = if draft {
+        format!("[Execution specification]({source})")
+    } else {
+        format!(
+            "[evm.codes](https://www.evm.codes/#{opcode:02x}) · [Execution specification]({source}) · [Gas schedule](https://github.com/ethereum/execution-specs/blob/master/src/ethereum/forks/osaka/vm/gas.py)"
+        )
+    };
     let docs = format!(
-        "# {name} (0x{opcode:02x})\n\n{summary}\n\n**Stack:** {stack}\n\n**Assembly operands:** {operands}\n\n[Execution specification]({source})"
+        "# {name} (0x{opcode:02x})\n\n{summary}\n\n**Since:** {since}\n\n**Minimum gas:** {gas}{note}\n\n**Stack:** {stack}{stack_note}\n\n{diagram}\n\n**Assembly operands:** {operands}\n\n{links}"
     );
     Info { name, docs }
+}
+
+// Fork names refer to opcode availability, not to the gas schedule below.
+// Osaka costs come from execution-specs' osaka/vm/gas.py and instruction bodies.
+// Amsterdam additions use EIP-7843 and EIP-8024; their activation is still draft.
+fn since(opcode: u8) -> &'static str {
+    match opcode {
+        0xf4 => "Homestead",
+        0x3d | 0x3e | 0xfa | 0xfd => "Byzantium",
+        0x1b..=0x1d | 0x3f | 0xf5 => "Constantinople",
+        0x46 | 0x47 => "Istanbul",
+        0x48 => "London",
+        0x44 => "Paris (0x44 was DIFFICULTY since Frontier)",
+        0x5f => "Shanghai",
+        0x49 | 0x4a | 0x5c..=0x5e => "Cancun",
+        0x1e => "Osaka",
+        0x4b | 0xe6..=0xe8 => "Amsterdam (draft)",
+        0xfe => "Frontier (invalid byte; designated INVALID by EIP-141)",
+        _ => "Frontier",
+    }
+}
+
+// Minimum opcode charge before refunds, assuming warm access and no additional
+// memory expansion where applicable. None means an unconditional exceptional halt.
+fn minimum_gas(opcode: u8) -> (Option<u32>, &'static str) {
+    let minimum = match opcode {
+        0x00 | 0xf3 | 0xfd => 0,
+        0x5b => 1,
+        0x30
+        | 0x32..=0x34
+        | 0x36
+        | 0x38
+        | 0x3a
+        | 0x3d
+        | 0x41..=0x46
+        | 0x48
+        | 0x4a
+        | 0x4b
+        | 0x50
+        | 0x58..=0x5a
+        | 0x5f => 2,
+        0x01
+        | 0x03
+        | 0x10..=0x1d
+        | 0x35
+        | 0x37
+        | 0x39
+        | 0x3e
+        | 0x49
+        | 0x51..=0x53
+        | 0x5e
+        | 0x60..=0x9f
+        | 0xe6..=0xe8 => 3,
+        0x02 | 0x04..=0x07 | 0x0b | 0x1e | 0x47 => 5,
+        0x08 | 0x09 | 0x56 => 8,
+        0x0a | 0x57 => 10,
+        0x40 => 20,
+        0x20 => 30,
+        0x31 | 0x3b | 0x3c | 0x3f | 0x54 | 0x55 | 0x5c | 0x5d | 0xf1 | 0xf2 | 0xf4 | 0xfa => 100,
+        0xa0..=0xa4 => 375 * (1 + u32::from(opcode - 0xa0)),
+        0xf0 | 0xf5 => 32_000,
+        0xfe => {
+            return (
+                None,
+                "All remaining gas in this call is consumed by the exceptional halt.",
+            );
+        }
+        0xff => 5_000,
+        _ => unreachable!("unsupported opcode"),
+    };
+    let note = match opcode {
+        0x0a => "Add 50 gas per significant exponent byte; the minimum uses exponent zero.",
+        0x20 => "Add 6 gas per 32-byte word hashed, rounded up, plus memory expansion.",
+        0x31 | 0x3b | 0x3f => "Warm account access; a cold account costs 2,600 gas.",
+        0x37 | 0x39 | 0x3e | 0x5e => {
+            "Add 3 gas per 32-byte word copied, rounded up, plus memory expansion."
+        }
+        0x3c => {
+            "Warm account access; a cold account costs 2,600 gas. Add 3 gas per 32-byte word copied, rounded up, plus memory expansion."
+        }
+        0x51..=0x53 | 0xf3 | 0xfd => "Memory expansion can add gas.",
+        0x54 => "Warm storage read; a cold slot costs 2,100 gas.",
+        0x55 => {
+            "Minimum for a warm no-op or dirty-slot write, before refunds. Cold access and value changes can cost more. Requires more than 2,300 gas remaining even for a 100-gas write."
+        }
+        0xa0..=0xa4 => "Includes the topic charge. Add 8 gas per data byte, plus memory expansion.",
+        0xf0 => {
+            "Add initcode metering, memory expansion, initcode execution, and deployed-code storage costs."
+        }
+        0xf5 => {
+            "Add initcode hashing and metering, memory expansion, initcode execution, and deployed-code storage costs."
+        }
+        0xf1 | 0xf2 => {
+            "Minimum for a warm target and zero value. Cold or delegated-code access, value transfer, memory expansion, and child execution can add gas; CALL may also create an account."
+        }
+        0xf4 | 0xfa => {
+            "Minimum for a warm target. Cold or delegated-code access, memory expansion, and child execution can add gas."
+        }
+        0xff => "Cold beneficiary access and creating a beneficiary account can add gas.",
+        _ => "",
+    };
+    (Some(minimum), note)
+}
+
+// Lists are in pop order: index zero is the top of the stack. Keep this data
+// independent of the drawing orientation so noncommutative operands stay clear.
+fn stack_io(opcode: u8) -> (Vec<String>, Vec<String>) {
+    if matches!(opcode, 0x80..=0x9f) {
+        let depth = if opcode < 0x90 {
+            opcode - 0x7f
+        } else {
+            opcode - 0x8f + 1
+        };
+        let input: Vec<_> = (1..=depth).map(|n| format!("s{n}")).collect();
+        let mut output = input.clone();
+        if opcode < 0x90 {
+            output.insert(0, input[usize::from(depth - 1)].clone());
+        } else {
+            output.swap(0, usize::from(depth - 1));
+        }
+        return (input, output);
+    }
+    if matches!(opcode, 0xa0..=0xa4) {
+        let mut input = vec!["offset".to_string(), "size".to_string()];
+        input.extend((1..=opcode - 0xa0).map(|n| format!("topic{n}")));
+        return (input, Vec::new());
+    }
+    let (input, output): (&[&str], &[&str]) = match opcode {
+        0x00 | 0x5b | 0xfe => (&[], &[]),
+        0x01 => (&["a", "b"], &["a + b"]),
+        0x02 => (&["a", "b"], &["a * b"]),
+        0x03 => (&["a", "b"], &["a - b"]),
+        0x04 | 0x05 => (&["a", "b"], &["a / b"]),
+        0x06 | 0x07 => (&["a", "b"], &["a % b"]),
+        0x08 => (&["a", "b", "m"], &["(a + b) % m"]),
+        0x09 => (&["a", "b", "m"], &["(a * b) % m"]),
+        0x0a => (&["a", "exponent"], &["a ** exponent"]),
+        0x0b => (&["b", "value"], &["sign_extend(b, value)"]),
+        0x10 | 0x12 => (&["a", "b"], &["a < b"]),
+        0x11 | 0x13 => (&["a", "b"], &["a > b"]),
+        0x14 => (&["a", "b"], &["a == b"]),
+        0x15 => (&["a"], &["a == 0"]),
+        0x16 => (&["a", "b"], &["a & b"]),
+        0x17 => (&["a", "b"], &["a | b"]),
+        0x18 => (&["a", "b"], &["a ^ b"]),
+        0x19 => (&["a"], &["~a"]),
+        0x1a => (&["index", "value"], &["byte(index, value)"]),
+        0x1b => (&["shift", "value"], &["value << shift"]),
+        0x1c | 0x1d => (&["shift", "value"], &["value >> shift"]),
+        0x1e => (&["value"], &["leading_zero_bits(value)"]),
+        0x20 => (&["offset", "size"], &["keccak256(memory range)"]),
+        0x30 => (&[], &["address"]),
+        0x31 => (&["address"], &["balance(address)"]),
+        0x32 => (&[], &["origin"]),
+        0x33 => (&[], &["caller"]),
+        0x34 => (&[], &["call_value"]),
+        0x35 => (&["offset"], &["calldata word at offset"]),
+        0x36 => (&[], &["calldata_size"]),
+        0x37 | 0x39 | 0x3e | 0x5e => (&["dest_offset", "src_offset", "size"], &[]),
+        0x38 => (&[], &["code_size"]),
+        0x3a => (&[], &["gas_price"]),
+        0x3b => (&["address"], &["code_size(address)"]),
+        0x3c => (&["address", "dest_offset", "src_offset", "size"], &[]),
+        0x3d => (&[], &["returndata_size"]),
+        0x3f => (&["address"], &["code_hash(address)"]),
+        0x40 => (&["block_number"], &["block_hash"]),
+        0x41 => (&[], &["fee_recipient"]),
+        0x42 => (&[], &["timestamp"]),
+        0x43 => (&[], &["block_number"]),
+        0x44 => (&[], &["prev_randao"]),
+        0x45 => (&[], &["gas_limit"]),
+        0x46 => (&[], &["chain_id"]),
+        0x47 => (&[], &["self_balance"]),
+        0x48 => (&[], &["base_fee"]),
+        0x49 => (&["index"], &["blob_versioned_hash"]),
+        0x4a => (&[], &["blob_base_fee"]),
+        0x4b => (&[], &["slot_number"]),
+        0x50 => (&["value"], &[]),
+        0x51 => (&["offset"], &["memory word at offset"]),
+        0x52 | 0x53 => (&["offset", "value"], &[]),
+        0x54 => (&["key"], &["storage[key]"]),
+        0x55 | 0x5d => (&["key", "value"], &[]),
+        0x56 => (&["destination"], &[]),
+        0x57 => (&["destination", "condition"], &[]),
+        0x58 => (&[], &["pc"]),
+        0x59 => (&[], &["memory_size"]),
+        0x5a => (&[], &["gas_remaining"]),
+        0x5c => (&["key"], &["transient_storage[key]"]),
+        0x5f => (&[], &["0"]),
+        0x60..=0x7f => (&[], &["immediate"]),
+        0xe6 => (&["s1", "...", "s[n]"], &["s[n]", "s1", "...", "s[n]"]),
+        0xe7 => (&["s1", "...", "s[n+1]"], &["s[n+1]", "...", "s1"]),
+        0xe8 => (
+            &["s1", "...", "s[n+1]", "...", "s[m+1]"],
+            &["s1", "...", "s[m+1]", "...", "s[n+1]"],
+        ),
+        0xf0 => (&["value", "offset", "size"], &["address or 0"]),
+        0xf1 | 0xf2 => (
+            &[
+                "gas",
+                "address",
+                "value",
+                "in_offset",
+                "in_size",
+                "out_offset",
+                "out_size",
+            ],
+            &["success (0 or 1)"],
+        ),
+        0xf3 | 0xfd => (&["offset", "size"], &[]),
+        0xf4 | 0xfa => (
+            &[
+                "gas",
+                "address",
+                "in_offset",
+                "in_size",
+                "out_offset",
+                "out_size",
+            ],
+            &["success (0 or 1)"],
+        ),
+        0xf5 => (&["value", "offset", "size", "salt"], &["address or 0"]),
+        0xff => (&["beneficiary"], &[]),
+        _ => unreachable!("unsupported opcode"),
+    };
+    (
+        input.iter().map(|value| (*value).to_string()).collect(),
+        output.iter().map(|value| (*value).to_string()).collect(),
+    )
+}
+
+fn stack_diagram(opcode: u8) -> String {
+    let (input, output) = stack_io(opcode);
+    let width = input.iter().map(String::len).max().unwrap_or(0).max(3) + 4;
+    let mut diagram = format!("```text\n{:<width$}out:\n", "in:");
+    for row in 0..input.len().max(output.len()) {
+        let left = input.get(row).map(String::as_str).unwrap_or("");
+        if let Some(right) = output.get(row) {
+            writeln!(diagram, "{left:<width$}{right}").unwrap();
+        } else {
+            writeln!(diagram, "{left}").unwrap();
+        }
+    }
+    write!(diagram, "{:<width$}...\n```", "...").unwrap();
+    diagram
 }
 
 fn info(opcode: u8) -> Option<Info> {
@@ -725,6 +999,21 @@ mod tests {
                 );
                 assert!(entry.docs.contains(&format!("0x{opcode:02x}")));
                 assert!(entry.docs.contains("**Stack:**"));
+                assert!(entry.docs.contains("**Since:**"));
+                assert!(entry.docs.contains("**Minimum gas:**"));
+                assert!(entry.docs.contains("```text\nin:"));
+                assert!(entry.docs.contains("out:\n"));
+                let (input, output) = super::stack_io(opcode);
+                if !matches!(opcode, 0x80..=0x9f | 0xe6..=0xe8) {
+                    assert!(
+                        entry.docs.contains(&format!(
+                            "Pops {}, pushes {}.",
+                            input.len(),
+                            output.len()
+                        )),
+                        "stack counts for 0x{opcode:02x}"
+                    );
+                }
                 assert!(entry.docs.contains("**Assembly operands:**"));
                 assert!(entry.docs.contains("[Execution specification](https://"));
                 let operand = match opcode {
@@ -739,6 +1028,134 @@ mod tests {
         }
         assert!(info(0xe7).unwrap().docs.contains("item n + 1"));
         assert!(info(0xe8).unwrap().docs.contains("items n + 1 and m + 1"));
+    }
+
+    #[test]
+    fn diagrams_preserve_operand_order_and_stack_positions() {
+        assert_eq!(
+            super::stack_diagram(0x03),
+            "```text\nin:    out:\na      a - b\nb\n...    ...\n```"
+        );
+        for (opcode, input, output) in [
+            (0x04, vec!["a", "b"], vec!["a / b"]),
+            (0x0a, vec!["a", "exponent"], vec!["a ** exponent"]),
+            (0x1b, vec!["shift", "value"], vec!["value << shift"]),
+            (0x57, vec!["destination", "condition"], vec![]),
+            (
+                0xf1,
+                vec![
+                    "gas",
+                    "address",
+                    "value",
+                    "in_offset",
+                    "in_size",
+                    "out_offset",
+                    "out_size",
+                ],
+                vec!["success (0 or 1)"],
+            ),
+            (0x80, vec!["s1"], vec!["s1", "s1"]),
+            (0x81, vec!["s1", "s2"], vec!["s2", "s1", "s2"]),
+            (0x90, vec!["s1", "s2"], vec!["s2", "s1"]),
+            (0x91, vec!["s1", "s2", "s3"], vec!["s3", "s2", "s1"]),
+            (
+                0xa4,
+                vec!["offset", "size", "topic1", "topic2", "topic3", "topic4"],
+                vec![],
+            ),
+            (
+                0xe6,
+                vec!["s1", "...", "s[n]"],
+                vec!["s[n]", "s1", "...", "s[n]"],
+            ),
+            (
+                0xe7,
+                vec!["s1", "...", "s[n+1]"],
+                vec!["s[n+1]", "...", "s1"],
+            ),
+            (
+                0xe8,
+                vec!["s1", "...", "s[n+1]", "...", "s[m+1]"],
+                vec!["s1", "...", "s[m+1]", "...", "s[n+1]"],
+            ),
+        ] {
+            let (actual_input, actual_output) = super::stack_io(opcode);
+            assert_eq!(actual_input, input, "input for 0x{opcode:02x}");
+            assert_eq!(actual_output, output, "output for 0x{opcode:02x}");
+        }
+        for opcode in 0x80..=0x9f {
+            let (input, output) = super::stack_io(opcode);
+            if opcode < 0x90 {
+                assert_eq!(output.len(), input.len() + 1);
+                assert_eq!(output.first(), input.last());
+                assert_eq!(&output[1..], input);
+            } else {
+                assert_eq!(output.len(), input.len());
+                assert_eq!(output.first(), input.last());
+                assert_eq!(output.last(), input.first());
+                assert_eq!(output[1..output.len() - 1], input[1..input.len() - 1]);
+            }
+        }
+    }
+
+    #[test]
+    fn fork_history_is_distinct_from_the_gas_schedule() {
+        for (opcode, fork, gas) in [
+            (0x03, "Frontier", 3),
+            (0xf4, "Homestead", 100),
+            (0x3d, "Byzantium", 2),
+            (0xfd, "Byzantium", 0),
+            (0x1b, "Constantinople", 3),
+            (0x3f, "Constantinople", 100),
+            (0xf5, "Constantinople", 32_000),
+            (0x46, "Istanbul", 2),
+            (0x47, "Istanbul", 5),
+            (0x48, "London", 2),
+            (0x44, "Paris (0x44 was DIFFICULTY since Frontier)", 2),
+            (0x5f, "Shanghai", 2),
+            (0x49, "Cancun", 3),
+            (0x5c, "Cancun", 100),
+            (0x5e, "Cancun", 3),
+            (0x1e, "Osaka", 5),
+            (0x4b, "Amsterdam (draft)", 2),
+            (0xe6, "Amsterdam (draft)", 3),
+            (0xe7, "Amsterdam (draft)", 3),
+            (0xe8, "Amsterdam (draft)", 3),
+        ] {
+            let entry = info(opcode).unwrap();
+            assert!(entry.docs.contains(&format!("**Since:** {fork}\n")));
+            assert!(entry.docs.contains(&format!("**Minimum gas:** {gas} (")));
+            let schedule = if matches!(opcode, 0x4b | 0xe6..=0xe8) {
+                "Amsterdam draft"
+            } else {
+                "Osaka"
+            };
+            assert!(entry.docs.contains(&format!("({schedule}).")));
+        }
+        for (opcode, minimum, qualification) in [
+            (0x0a, 10, "significant exponent byte"),
+            (0x20, 30, "word hashed"),
+            (0x31, 100, "cold account costs 2,600"),
+            (0x3c, 100, "word copied"),
+            (0x54, 100, "cold slot costs 2,100"),
+            (0x55, 100, "more than 2,300 gas remaining"),
+            (0xa0, 375, "topic charge"),
+            (0xa4, 1_875, "topic charge"),
+            (0xf0, 32_000, "initcode"),
+            (0xf1, 100, "child execution"),
+            (0xff, 5_000, "Cold beneficiary"),
+        ] {
+            let (gas, note) = super::minimum_gas(opcode);
+            assert_eq!(gas, Some(minimum));
+            assert!(note.contains(qualification), "0x{opcode:02x}: {note}");
+        }
+        assert_eq!(super::minimum_gas(0xfe).0, None);
+        assert!(
+            info(0xfe)
+                .unwrap()
+                .docs
+                .contains("All remaining gas in this call")
+        );
     }
 
     #[test]
