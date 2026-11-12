@@ -25,6 +25,7 @@ syn = { version = "3", features = ["full"] }
 
 [dev-dependencies]
 proc-macro2 = { version = "1", features = ["span-locations"] }
+hex-literal = "1"
 
 [package.metadata.docs.rs]
 all-features = true

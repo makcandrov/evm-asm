@@ -71,11 +71,12 @@ mod opcodes;
 ///
 /// ```
 /// use evm_asm::bytecode;
+/// use hex_literal::hex;
 /// const WORD: [u8; 2] = [0x12, 0x34];
 /// const LEFT: &[u8] = bytecode! { push4 #~left(WORD) };
 /// const RIGHT: &[u8] = bytecode! { push4 #~right(WORD) };
-/// assert_eq!(LEFT, b"\x63\x00\x00\x12\x34");
-/// assert_eq!(RIGHT, b"\x63\x12\x34\x00\x00");
+/// assert_eq!(LEFT, &hex!("6300001234"));
+/// assert_eq!(RIGHT, &hex!("6312340000"));
 /// ```
 ///
 /// Nonzero trailing bytes cannot be discarded with right padding:
@@ -124,12 +125,14 @@ mod opcodes;
 ///
 /// ```
 /// use evm_asm::bytecode;
+/// use hex_literal::hex;
 /// let code = bytecode! { slotnum dupn 17 swapn 108 exchange 2 3 };
-/// assert_eq!(code, &[0x4b, 0xe6, 0x80, 0xe7, 0xdb, 0xe8, 0x9d]);
+/// assert_eq!(code, &hex!("4be680e7dbe89d"));
 /// ```
 ///
 /// ```
 /// use evm_asm::bytecode;
+/// use hex_literal::hex;
 ///
 /// const CODE: &[u8] = bytecode! {
 ///     push2 0x1234
@@ -139,7 +142,7 @@ mod opcodes;
 ///     push0
 ///     return
 /// };
-/// assert_eq!(CODE, &[0x61, 0x12, 0x34, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3]);
+/// assert_eq!(CODE, &hex!("6112345f5260205ff3"));
 /// ```
 ///
 /// Unknown opcodes, missing operands, and overflowing immediates are compile

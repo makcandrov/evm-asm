@@ -1,6 +1,7 @@
 #![no_std]
 
 use evm_asm::bytecode;
+use hex_literal::hex;
 
 const ROOT_WORD: [u8; 2] = [0x12, 0x34];
 
@@ -21,10 +22,7 @@ fn interpolates_arrays_slices_and_module_paths_between_literals() {
         push2 #constants::SLICE
         stop
     };
-    assert_eq!(
-        CODE,
-        b"\x5f\x61\xab\xcd\x60\xff\x61\xab\xcd\x61\xef\x01\x00"
-    );
+    assert_eq!(CODE, &hex!("5f61abcd60ff61abcd61ef0100"));
 }
 
 #[test]
@@ -42,7 +40,7 @@ fn accepts_const_accessors_blocks_and_nested_macros() {
         push2 #(const { [0x55, 0x66] })
         push2 #(bytecode! { push0 stop })
     };
-    assert_eq!(CODE, b"\x61\x11\x22\x61\x33\x44\x61\x55\x66\x61\x5f\x00");
+    assert_eq!(CODE, &hex!("611122613344615566615f00"));
 }
 
 #[test]
@@ -62,7 +60,7 @@ fn accepts_associated_and_qualified_constants() {
         push2 #<Config as Words>::WORD
         push2 #crate::ROOT_WORD
     };
-    assert_eq!(code, b"\x61\xab\xcd\x61\xef\x01\x61\x12\x34");
+    assert_eq!(code, &hex!("61abcd61ef01611234"));
 }
 
 #[test]
@@ -76,11 +74,11 @@ fn returns_static_data_from_functions_and_supports_const_parameters() {
     }
     const OWNED: [u8; 3] = *bytecode! { push2 #ROOT_WORD };
 
-    assert_eq!(single::<0>(), &[0x60, 0]);
-    assert_eq!(single::<255>(), &[0x60, 255]);
+    assert_eq!(single::<0>(), &hex!("6000"));
+    assert_eq!(single::<255>(), &hex!("60ff"));
     assert_eq!(full_word()[0], 0x7f);
     assert_eq!(&full_word()[1..], &WORD);
-    assert_eq!(OWNED, [0x61, 0x12, 0x34]);
+    assert_eq!(OWNED, hex!("611234"));
 }
 
 #[test]
@@ -94,7 +92,7 @@ fn caller_constants_do_not_conflict_with_expansion() {
         push1 #__evm_asm_source
         push1 #__evm_asm_index
     };
-    assert_eq!(code, b"\x60\x11\x60\x22\x60\x33");
+    assert_eq!(code, &hex!("601160226033"));
 }
 
 #[test]
@@ -111,10 +109,7 @@ fn interpolations_preserve_instruction_and_jump_offsets() {
         swapn 108
         exchange 2 3
     };
-    assert_eq!(
-        code,
-        b"\x60\x06\x56\x61\xab\xcd\x5b\x4b\xe6\x80\xe7\xdb\xe8\x9d"
-    );
+    assert_eq!(code, &hex!("60065661abcd5b4be680e7dbe89d"));
     assert_eq!(code[usize::from(DESTINATION[0])], 0x5b);
 }
 

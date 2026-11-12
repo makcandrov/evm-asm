@@ -3,6 +3,7 @@
 #![deny(warnings)]
 
 use evm_asm::bytecode;
+use hex_literal::hex;
 
 mod __evm_asm_opcode_docs {
     pub const VALUE: [u8; 1] = [0x22];
@@ -19,7 +20,7 @@ fn documentation_keeps_const_output_and_caller_names_intact() {
         sha3
         keccak256
     };
-    assert_eq!(CODE, b"\x60\x11\x60\x22\x06\xf3\x20\x20");
+    assert_eq!(CODE, &hex!("6011602206f32020"));
     const EMPTY: &[u8; 0] = bytecode! {};
     assert!(EMPTY.is_empty());
 }

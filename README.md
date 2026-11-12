@@ -4,6 +4,7 @@ Compile-time EVM bytecode assembly macro returning `&'static [u8; N]`.
 
 ```rust
 use evm_asm::bytecode;
+use hex_literal::hex;
 
 const SIZE: [u8; 1] = [0x08];
 const CODE: &[u8] = bytecode! {
@@ -12,7 +13,7 @@ const CODE: &[u8] = bytecode! {
     eq
 };
 
-assert_eq!(CODE, &[0x60, 0x08, 0x36, 0x14]);
+assert_eq!(CODE, &hex!("60083614"));
 ```
 
 Enable optional opcode hover documentation in rust-analyzer with:
